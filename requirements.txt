@@ -1,4 +1,6 @@
 flask 
 Flask-SocketIO 
 eventlet 
+
 greenlet
+gunicorn
