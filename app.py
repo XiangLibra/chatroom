@@ -9,6 +9,11 @@ from flask_socketio import SocketIO, emit
 # === MongoDB ===
 from pymongo import MongoClient, ASCENDING, DESCENDING
 
+import os
+from dotenv import load_dotenv #使用讀取環境的套件
+load_dotenv()
+
+
 app = Flask(__name__)
 
 # 🔌 SocketIO（eventlet 模式）
@@ -23,7 +28,16 @@ def index():
 MAX_HISTORY = 100
 
 # === MongoDB 連線設定（環境變數可覆蓋） ===
-MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017")
+# MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017")
+MONGO_URI = os.getenv("MONGO_URI","mongodb+srv://renderUser:StrongPassword123@cluster0.zgdff3f.mongodb.net/?appName=Cluster0")  # 使用自己mongodb atlas的網址  ex: mongodb://appuser:StrongPassword!@mongo-xxxx:27017/chatapp?authSource=chatapp
+
+
+if not MONGO_URI:
+    raise RuntimeError(
+        "環境變數 MONGO_URI 未設定。請在本地 .env 或雲端環境變數中提供連線字串。"
+        "\n例：MONGO_URI=mongodb+srv://<user>:<pass>@cluster0.xxxxx.mongodb.net/chatapp?retryWrites=true&w=majority"
+    )
+
 DB_NAME = os.getenv("MONGO_DB", "chatapp")
 COLLECTION_NAME = os.getenv("MONGO_COLLECTION", "messages")
 

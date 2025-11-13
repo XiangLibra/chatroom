@@ -1,6 +1,7 @@
 Flask
 Flask-SocketIO
 eventlet
-gunicorn
-pymongo
+pymongo[srv]
 dnspython
+python-dotenv
+gunicorn
