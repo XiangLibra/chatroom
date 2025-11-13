@@ -9,6 +9,7 @@ Flask>=2.3,<3.0
 Flask-SocketIO>=5.3.6,<6.0
 eventlet>=0.35.2
 gunicorn>=21.2,<22.0
+gevent
 pymongo[srv]>=4.10,<5
 dnspython>=2.6,<3
 python-dotenv>=1.0,<2
