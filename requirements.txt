@@ -1,6 +1,6 @@
-flask 
-Flask-SocketIO 
-eventlet 
-
-greenlet
+Flask
+Flask-SocketIO
+eventlet
 gunicorn
+pymongo
+dnspython

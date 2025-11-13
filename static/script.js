@@ -1,11 +1,11 @@
 /* ========= Mermaid 初始化 ========= */
-mermaid.initialize({startOnLoad:false});
+mermaid.initialize({ startOnLoad: false });
 
 /* ===== 使用者暱稱 ===== */
-let username = sessionStorage.getItem('chat_username');
-if(!username){
-  username = '使用者'+Math.floor(Math.random()*1000);
-  sessionStorage.setItem('chat_username',username);
+let username = sessionStorage.getItem("chat_username");
+if (!username) {
+  username = "使用者" + Math.floor(Math.random() * 1000);
+  sessionStorage.setItem("chat_username", username);
 }
 
 
@@ -20,9 +20,9 @@ $("#message-input").on("keydown", (e) => {
 
 
 /* ===== 清空訊息 ===== */
-$("#clear-btn").on("click", () => {
-  if (confirm("確定要清空聊天？")) $("#chat-messages").empty();
-});
+// $("#clear-btn").on("click", () => {
+//   if (confirm("確定要清空聊天？")) $("#chat-messages").empty();
+// });
 
 
 /* ========= 滑到底部 ========= */
@@ -111,6 +111,7 @@ $(".emoji-btn").on("click", function () {
 /* ===== 連線 ===== */
 const socket = io(); // 連到同主機:5000
 
+
 /* ===== 線上人數 ===== */
 socket.on("user_count", (d) => $("#online-count").text(d.count));
 
@@ -130,6 +131,7 @@ socket.on("disconnect", () => updateStatus(false, "連線中斷"));
 socket.on("connect_error", () => updateStatus(false, "連線錯誤"));
 
 
+
 /* ===== 初次加入 ===== */
 socket.emit("join", { username });
 /* ===== 工具函式 ===== */
@@ -141,6 +143,9 @@ function addSystem(text) {
 /* ===== 系統事件 ===== */
 socket.on("user_joined", (d) => addSystem(`${d.username} 加入了聊天`));
 socket.on("user_left", (d) => addSystem(`${d.username} 離開了聊天`));
+
+
+
 
 
 function send() {
@@ -155,11 +160,12 @@ function send() {
   scrollBottom();
 }
 
-
 /* ===== 聊天事件 ===== */
 socket.on("chat_message", (d) =>
   addMessage(d.content, d.username === username, d.username)
 );
+
+
 
 
 function showTyping(user) {
@@ -194,23 +200,47 @@ $("#message-input").on("input", function () {
 });
 
 
+
+
+
 /* ===== 改暱稱 ===== */
-$("#change-name-btn").on("click", () => {              // 當使用者按下「改名稱」按鈕時觸發
-  const v = prompt("輸入新名稱：", username);          
-  // 跳出輸入框，預設顯示目前使用者名稱
-  if (v && v.trim() && v !== username) {               // 檢查：新名稱不能是空的或與舊名稱相同
-    socket.emit("change_username", {                  // 將舊名稱與新名稱發送給伺服器
-      oldUsername: username,
-      newUsername: v,
-    });
-    username = v.trim();                               // 更新本地端的使用者名稱變數
-    sessionStorage.setItem("chat_username", username); // 將新名稱儲存到 sessionStorage（頁面重整後仍保留）
+$("#change-name-btn").on("click", () => {
+  const v = prompt("輸入新名稱：", username);
+  if (v && v.trim() && v !== username) {
+    socket.emit("change_username", { oldUsername: username, newUsername: v });
+    username = v.trim();
+    sessionStorage.setItem("chat_username", username);
   }
 });
 
-// 監聽伺服器廣播事件，當有人更改名稱時執行
 socket.on("user_changed_name", (d) =>
-  addSystem(`${d.oldUsername} 更名為 ${d.newUsername}`) // 在系統訊息區顯示「某人更名為XXX」
+  addSystem(`${d.oldUsername} 更名為 ${d.newUsername}`)
 );
 
 
+// ===== 初次拉取歷史訊息 =====
+fetch("/get_history")
+  .then((r) => r.json())
+  .then((list) => {
+    list.forEach((m) => {
+      addMessage(m.content, m.username === username, m.username);
+      // 若想用伺服器時間，也可改 addMessage(m.content, m.username === username, m.username, m.timestamp)
+    });
+  })
+  .catch(() => console.warn("載入歷史失敗"));
+
+$("#clear-btn").on("click", () => {
+  if (!confirm("確定要清空聊天？")) return;
+  fetch("/clear_history", { method: "POST" })
+    .then((r) => r.json())
+    .then(() => {
+      $("#chat-messages").empty();
+      addSystem("歷史紀錄已清除");
+    })
+    .catch(() => alert("清除失敗"));
+});
+
+
+
+//更新狀態
+updateStatus(false, "連線中…");
