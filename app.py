@@ -1,3 +1,4 @@
+
 import os
 import re
 import uuid
@@ -9,51 +10,51 @@ from flask_socketio import SocketIO, emit
 # === MongoDB ===
 from pymongo import MongoClient, ASCENDING, DESCENDING
 
-import os
-from dotenv import load_dotenv #使用讀取環境的套件
-load_dotenv()
+from dotenv import load_dotenv #使用讀取環境的套件（在使用MongoDB Atlas開啟）
+load_dotenv() #讀取.env的環境
 
 
 app = Flask(__name__)
 
-# 🔌 SocketIO（eventlet 模式）
+# 🔌 初始化 Socket.IO（使用 eventlet 異步模式）
+# - cors_allowed_origins="*": 允許任意來源連線，方便教學/測試。正式環境請改白名單以提升安全性。
+# - async_mode="eventlet": 與 eventlet 配合，能處理較多並發連線；未安裝 eventlet 可改 "threading"。
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode="eventlet")
 
 # === 根路由 ===
 @app.route("/")
 def index():
+    # 回傳 templates/index.html，前端會連上 Socket.IO 並渲染 UI
     return render_template("index.html")
 
 # === 參數 ===
-MAX_HISTORY = 100
+MAX_HISTORY = 100  # 取得歷史訊息時的最大筆數（避免一次查太多資料）
 
-# === MongoDB 連線設定（環境變數可覆蓋） ===
+# === MongoDB 連線設定（可用環境變數覆蓋） ===
+# - 本地開發預設連到本機 MongoDB。上雲（Atlas）時請在環境變數設定 MONGO_URI（mongodb+srv://...）
 # MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017")
-MONGO_URI = os.getenv("MONGO_URI","mongodb+srv://renderUser:StrongPassword123@cluster0.zgdff3f.mongodb.net/?appName=Cluster0")  # 使用自己mongodb atlas的網址  ex: mongodb://appuser:StrongPassword!@mongo-xxxx:27017/chatapp?authSource=chatapp
+MONGO_URI = os.getenv("MONGO_URI")  # 使用自己mongodb atlas的網址  ex: mongodb://appuser:StrongPassword!@mongo-xxxx:27017/chatapp?authSource=chatapp
 
+DB_NAME = os.getenv("MONGO_DB", "chatapp")           # 資料庫名稱
+COLLECTION_NAME = os.getenv("MONGO_COLLECTION", "messages")  # 集合名稱
 
-if not MONGO_URI:
-    raise RuntimeError(
-        "環境變數 MONGO_URI 未設定。請在本地 .env 或雲端環境變數中提供連線字串。"
-        "\n例：MONGO_URI=mongodb+srv://<user>:<pass>@cluster0.xxxxx.mongodb.net/chatapp?retryWrites=true&w=majority"
-    )
-
-DB_NAME = os.getenv("MONGO_DB", "chatapp")
-COLLECTION_NAME = os.getenv("MONGO_COLLECTION", "messages")
-
+# 建立 MongoClient（同步版）
+# - Atlas 推薦使用 SRV 連線字串（mongodb+srv://...），需要依賴 dnspython
 mongo_client = MongoClient(MONGO_URI)
 db = mongo_client[DB_NAME]
 col = db[COLLECTION_NAME]
 
-
 # 索引（啟動時確保存在）
-# 以 timestamp 查詢最新訊息、以 _id（uuid 字串）快速查
+# 以 timestamp 排序取最新訊息會用到；若需要依 id 查找，_id 本身已是索引（這裡用自訂 uuid 字串）
 col.create_index([("timestamp", ASCENDING)])
 
-
-# === 工具 ===
+# === 工具：把 MongoDB 文件轉成前端要的 JSON 物件 ===
 def _doc_to_message(doc):
-    """把 MongoDB 文件轉成前端要的訊息物件（timestamp 轉 ISO 字串）"""
+    """
+    將資料庫中的訊息文件轉為前端使用的格式：
+    - _id: 我們用 uuid 字串當主鍵，傳給前端用作訊息唯一識別
+    - timestamp: 以 datetime 儲存在 DB；回傳時轉成 ISO8601（UTC, 結尾 'Z'）
+    """
     return {
         "id": doc.get("_id"),
         "username": doc.get("username"),
@@ -61,10 +62,15 @@ def _doc_to_message(doc):
         "timestamp": doc.get("timestamp").isoformat(timespec="seconds") + "Z" if doc.get("timestamp") else None,
     }
 
-# === 你原本的線上使用者/事件 ===
+# === 使用者連線狀態（存在記憶體） ===
+# 結構: { sid: {"username": "某人"} }
 clients = {}
 
 def broadcast_user_count():
+    """
+    廣播目前線上有「已設定 username」的連線數量。
+    前端接收事件 'user_count' 後更新顯示。
+    """
     emit(
         "user_count",
         {"count": len([c for c in clients.values() if c["username"]])},
@@ -73,11 +79,21 @@ def broadcast_user_count():
 
 @socketio.on("connect")
 def on_connect():
+    """
+    新用戶連線時觸發：
+    - 先註冊該連線的 SID，username 先放 None
+    - 前端通常會在之後送 'join' 指定暱稱
+    """
     clients[request.sid] = {"username": None}
     print("Client connect:", request.sid)
 
 @socketio.on("disconnect")
 def on_disconnect():
+    """
+    用戶離線時觸發：
+    - 從 clients 移除該 SID
+    - 如果他之前有 username，廣播 'user_left' 並更新線上人數
+    """
     info = clients.pop(request.sid, None)
     if info and info["username"]:
         emit("user_left", {"username": info["username"]}, broadcast=True)
@@ -86,6 +102,11 @@ def on_disconnect():
 
 @socketio.on("join")
 def on_join(data):
+    """
+    用戶加入聊天室：
+    - 設定該 SID 對應的 username（預設 "匿名"）
+    - 廣播 'user_joined' 給全部人，並更新線上人數
+    """
     username = data.get("username", "匿名")
     clients[request.sid]["username"] = username
     emit("user_joined", {"username": username}, broadcast=True)
@@ -94,60 +115,97 @@ def on_join(data):
 
 @socketio.on("typing")
 def on_typing(data):
+    """
+    用戶輸入中提示：
+    - 直接把 'typing' 廣播給其他人（不包含自己）
+    - 前端會顯示「某某正在輸入…」
+    """
     emit("typing", data, broadcast=True, include_self=False)
 
 @socketio.on("change_username")
 def on_change(data):
+    """
+    用戶更改暱稱：
+    - 更新記憶體中的 username
+    - 廣播 'user_changed_name'，前端可以顯示「A 更名為 B」
+    """
     old = data.get("oldUsername")
     new = data.get("newUsername")
     if request.sid in clients:
         clients[request.sid]["username"] = new
     emit("user_changed_name", {"oldUsername": old, "newUsername": new}, broadcast=True)
 
-# === send_message：改成寫入 MongoDB → 再廣播 ===
+# === 核心：接收訊息 → 寫入 MongoDB → 廣播 ===
 @socketio.on("send_message")
 def on_message(data):
+    """
+    前端送來一則訊息（'send_message' 事件）：
+    1) 取得送訊者的 username（優先從 server 端 SID 綁定，否則用 data.username，最後預設 "匿名"）
+    2) 清理訊息內容：移除你舊版格式 "user name is ...\ncontent is " 的前綴（如果有）
+    3) 建立訊息文件（_id 用 uuid 字串、timestamp 用 datetime 以利排序）
+    4) insert_one 寫入 MongoDB
+    5) 把整理好的訊息（轉 ISO 字串時間）廣播給其他用戶（不包含自己）
+    """
     try:
+        # 從 server 記憶體找 username；找不到就 fallback 到 data；最後用 "匿名"
         username = (clients.get(request.sid, {}) or {}).get("username") or data.get("username") or "匿名"
+
+        # 取出文字內容並去頭尾空白
         raw_content = str(data.get("content", "")).strip()
+
+        # 把舊格式 "user name is xxx\ncontent is " 的前綴拿掉（若你已不會送這種格式，也可移除此行）
         cleaned_content = re.sub(r"user name is .*?\ncontent is ", "", raw_content, flags=re.IGNORECASE)
 
+        # 產生訊息主鍵（uuid 字串）與時間（UTC）
         msg_id = str(uuid.uuid4())
         now_utc = datetime.utcnow()
 
+        # 準備寫入 MongoDB 的文件
         doc = {
-            "_id": msg_id,                # 用 uuid 當主鍵
+            "_id": msg_id,        # 自訂主鍵；不用 ObjectId 是為了前端更好讀
             "username": username,
             "content": cleaned_content,
-            "timestamp": now_utc,         # 以 datetime 儲存，查詢/排序方便
+            "timestamp": now_utc, # 用 datetime 儲存，查詢/排序更直覺
         }
 
-        # 寫入 MongoDB
+        # 寫入資料庫
         col.insert_one(doc)
 
-        # 給前端的訊息格式（timestamp 轉 ISO 字串）
+        # 組成給前端的格式（把 datetime 轉成 ISO8601）
         message = _doc_to_message(doc)
 
         # 廣播給其他人（不含自己）
         emit("chat_message", message, broadcast=True, include_self=False)
 
     except Exception as e:
+        # 任意錯誤只回給這位送訊息的人，不影響其他連線
         emit("chat_error", {"message": f"訊息處理失敗：{e}"}, to=request.sid)
 
 # === 歷史 API：從 MongoDB 取最後 N 筆 ===
 @app.route("/get_history", methods=["GET"])
 def get_history():
-    # 取最新的 MAX_HISTORY 筆，再反轉成由舊到新顯示
-    cursor = col.find({}, {"_id": 1, "username": 1, "content": 1, "timestamp": 1}) \
-                .sort("timestamp", DESCENDING) \
-                .limit(MAX_HISTORY)
+    """
+    取得歷史訊息：
+    - 先依 timestamp 由新到舊排序，limit MAX_HISTORY
+    - 再在程式端 reverse 成由舊到新，符合聊天視覺從上到下的習慣
+    - 只挑必要欄位回傳，減少 payload
+    """
+    cursor = (
+        col.find({}, {"_id": 1, "username": 1, "content": 1, "timestamp": 1})
+           .sort("timestamp", DESCENDING)
+           .limit(MAX_HISTORY)
+    )
     docs = list(cursor)
     docs.reverse()
     return jsonify([_doc_to_message(d) for d in docs])
 
-# === 清空歷史（刪除資料集合中的所有訊息） ===
+# === 清空歷史（刪除集合中的所有訊息） ===
 @app.route("/clear_history", methods=["POST"])
 def clear_history():
+    """
+    清除所有訊息（整個集合內容）：
+    - 教學/重置用。正式環境請加權限保護或僅管理者可用。
+    """
     try:
         col.delete_many({})
         return jsonify({"status": "success", "message": "歷史紀錄已清除"})
@@ -155,169 +213,9 @@ def clear_history():
         return jsonify({"status": "error", "message": f"刪除失敗: {e}"}), 500
 
 if __name__ == "__main__":
-    # 提醒：請先安裝 `pymongo`，並啟動你的 MongoDB
-    # pip install pymongo
+    # 提醒：
+    # - 本地請先啟動 MongoDB（或把 MONGO_URI 設為 Atlas 的 SRV 連線字串）
+    # - 上 Render/雲端建議讀取環境變數 PORT，而不是硬寫 5000：
+    #     port = int(os.getenv("PORT", 5000))
+    #   然後改成 socketio.run(..., port=port)
     socketio.run(app, host="0.0.0.0", port=5000, debug=True)
-
-
-
-
-# import os
-# import re
-# import json
-# import uuid
-# from datetime import datetime
-
-# from flask import Flask, render_template, request, jsonify
-# from flask_socketio import SocketIO, emit
-
-# app = Flask(__name__)
-
-# # 🔌 SocketIO（eventlet 模式）
-# socketio = SocketIO(app, cors_allowed_origins="*", async_mode="eventlet")
-
-# # === 根路由 ===
-# @app.route("/")
-# def index():
-#     return render_template("index.html")
-
-# # === 聊天歷史設定 ===
-# MAX_HISTORY = 100
-# HISTORY_DIR = "chat_history"
-# HISTORY_FILE = os.path.join(HISTORY_DIR, "messages.json")
-# os.makedirs(HISTORY_DIR, exist_ok=True)
-
-# # 根據 async_mode 選用正確的鎖（避免 eventlet 被真正的 thread lock 卡死）
-# if socketio.async_mode == "eventlet":
-#     from eventlet.semaphore import Semaphore
-#     _history_lock = Semaphore(1)
-# else:
-#     import threading
-#     _history_lock = threading.Lock()
-
-# chat_history = []  # in-memory 緩存
-
-
-# def _load_chat_history():
-#     global chat_history
-#     if os.path.exists(HISTORY_FILE):
-#         try:
-#             with open(HISTORY_FILE, "r", encoding="utf-8") as f:
-#                 data = json.load(f)
-#             if isinstance(data, list):
-#                 chat_history = data[-MAX_HISTORY:]
-#             else:
-#                 chat_history = []
-#         except Exception as e:
-#             print(f"[history] 讀取失敗：{e}")
-#             chat_history = []
-#     else:
-#         chat_history = []
-
-
-# def _save_chat_history():
-#     """只負責把目前 chat_history 落盤；鎖由呼叫端保護。"""
-#     try:
-#         with open(HISTORY_FILE, "w", encoding="utf-8") as f:
-#             json.dump(chat_history, f, ensure_ascii=False, indent=2)
-#     except Exception as e:
-#         print(f"[history] 寫入失敗：{e}")
-
-
-# # 啟動先載一次
-# _load_chat_history()
-
-# # === 你原本的線上使用者/事件 ===
-# clients = {}
-
-# def broadcast_user_count():
-#     emit(
-#         "user_count",
-#         {"count": len([c for c in clients.values() if c["username"]])},
-#         broadcast=True,
-#     )
-
-# @socketio.on("connect")
-# def on_connect():
-#     clients[request.sid] = {"username": None}
-#     print("Client connect:", request.sid)
-
-# @socketio.on("disconnect")
-# def on_disconnect():
-#     info = clients.pop(request.sid, None)
-#     if info and info["username"]:
-#         emit("user_left", {"username": info["username"]}, broadcast=True)
-#         broadcast_user_count()
-#     print("Client disconnect:", request.sid)
-
-# @socketio.on("join")
-# def on_join(data):
-#     username = data.get("username", "匿名")
-#     clients[request.sid]["username"] = username
-#     emit("user_joined", {"username": username}, broadcast=True)
-#     broadcast_user_count()
-#     print(username, "joined")
-
-# @socketio.on("typing")
-# def on_typing(data):
-#     emit("typing", data, broadcast=True, include_self=False)
-
-# @socketio.on("change_username")
-# def on_change(data):
-#     old = data.get("oldUsername")
-#     new = data.get("newUsername")
-#     if request.sid in clients:
-#         clients[request.sid]["username"] = new
-#     emit("user_changed_name", {"oldUsername": old, "newUsername": new}, broadcast=True)
-
-# # === 這裡加「寫入歷史 → 廣播」且不會卡死 ===
-# @socketio.on("send_message")
-# def on_message(data):
-#     try:
-#         username = (clients.get(request.sid, {}) or {}).get("username") or data.get("username") or "匿名"
-#         raw_content = str(data.get("content", "")).strip()
-#         # 移除舊格式（可留可拿掉）
-#         cleaned_content = re.sub(r"user name is .*?\ncontent is ", "", raw_content, flags=re.IGNORECASE)
-
-#         message = {
-#             "id": str(uuid.uuid4()),
-#             "username": username,
-#             "content": cleaned_content,
-#             "timestamp": datetime.utcnow().isoformat(timespec="seconds") + "Z",
-#         }
-
-#         # 寫入 in-memory & 落盤（臨界區保持極短）
-#         with _history_lock:
-#             chat_history.append(message)
-#             if len(chat_history) > MAX_HISTORY:
-#                 del chat_history[0 : len(chat_history) - MAX_HISTORY]
-#             _save_chat_history()
-
-#         # 廣播給其他人（不含自己）
-#         emit("chat_message", message, broadcast=True, include_self=False)
-
-#     except Exception as e:
-#         # 有任何例外，回一個 error 給送訊息的人（不影響其他人）
-#         emit("chat_error", {"message": f"訊息處理失敗：{e}"}, to=request.sid)
-
-# # === 歷史 API：給前端載入/清空 ===
-# @app.route("/get_history", methods=["GET"])
-# def get_history():
-#     return jsonify(chat_history)
-
-# @app.route("/clear_history", methods=["POST"])
-# def clear_history():
-#     global chat_history
-#     with _history_lock:
-#         chat_history = []
-#         try:
-#             if os.path.exists(HISTORY_FILE):
-#                 os.remove(HISTORY_FILE)
-#         except Exception as e:
-#             return jsonify({"status": "error", "message": f"刪除檔案失敗: {e}"}), 500
-#     return jsonify({"status": "success", "message": "歷史紀錄已清除"})
-
-# if __name__ == "__main__":
-#     # eventlet 模式建議已安裝 eventlet；未安裝可改 async_mode 或移除
-#     socketio.run(app, host="0.0.0.0", port=5000, debug=True)
-
